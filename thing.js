@@ -92,6 +92,7 @@ input.fld:focus{background:var(--frameH)}
 .prog{width:100%;height:19px;background:var(--frame);position:relative;display:flex;align-items:center;justify-content:center}
 .prog .f{position:absolute;left:0;top:0;bottom:0;background:var(--grab);transition:width .38s cubic-bezier(.2,.8,.2,1)}
 .prog span{position:relative}
+.logo{width:15px;height:15px;vertical-align:-3px;margin-right:5px;color:var(--chk)}
 .ln{animation:ln .24s ease-out}
 @keyframes ln{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
 .dock{position:fixed;left:8px;bottom:0;padding-bottom:8px;display:flex;gap:6px;pointer-events:auto;z-index:9999;
@@ -120,6 +121,7 @@ input.fld:focus{background:var(--frameH)}
     return e;
   };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const LOGO = '<svg class="logo" viewBox="0 0 400 400" fill="none"><path d="M72.4336 193.066C73.6055 177.351 79.087 152.855 85.0459 138.436C127.145 36.5836 347.246 178.391 242.523 261.263C225.56 274.685 192.657 282.179 171.015 273.815C141.434 262.378 102.824 178.677 144.974 158.417C184.232 139.544 229.58 173.915 219.984 215.483C204.326 283.305 123.069 176.428 183.344 197.588M145.303 249.894C218.545 365.441 374.063 242.911 313.654 154.816" stroke="currentColor" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const CHECK = '<svg width="13" height="13" viewBox="0 0 13 13"><path d="M2 7l3 3 6-7" fill="none" stroke="#c4a1ff" stroke-width="2"/></svg>';
 
   // ============================
@@ -128,10 +130,11 @@ input.fld:focus{background:var(--frameH)}
   const st = {
     count: 50, start: 1, pattern: "{prefix}_{random}", prefix: "robot",
     pwMode: "Random per account", len: 24, up: true, dig: true, sym: false,
-    delay: 250, retry: 2
+    delay: 250, postDelay: 0, retry: 2
   };
   const ctl = { stop: false, paused: false, running: false };
   window.__nebulaCtl = ctl;
+  let quickBusy = false;
 
   // ============================
   // GUI HELPERS
@@ -208,9 +211,9 @@ input.fld:focus{background:var(--frameH)}
     return n;
   }
 
-  function makeWin(title, css, hidden) {
+  function makeWin(title, css, hidden, logo) {
     const w = el("div", "win" + (hidden ? " hidden" : ""),
-      `<div class="title"><span class="arrow"></span><span class="tt">${title}</span><span class="x">\u2715</span></div>
+      `<div class="title"><span class="arrow"></span><span class="tt">${logo ? LOGO : ""}${title}</span><span class="x">\u2715</span></div>
        <div class="body"></div><div class="grip"></div>`);
     w.style.cssText = css;
     ui.appendChild(w);
@@ -221,13 +224,16 @@ input.fld:focus{background:var(--frameH)}
   // WINDOWS
   // ============================
   const w1Left = Math.max(8, innerWidth - 456);
-  const W1 = makeWin("Nebula", `left:${w1Left}px;top:16px;width:440px;height:440px`, true);
+  const W1 = makeWin("Nebula", `left:${w1Left}px;top:16px;width:440px;height:470px`, true, true);
   const W2 = makeWin("Log", `left:${Math.max(8, w1Left - 356)}px;top:16px;width:340px;height:240px`, true);
   const body = $(".body", W1), b2 = $(".body", W2);
 
-  let r = row(body);
+  let r, s;
+  s = header(body, "Quick account", true);
+  r = row(s);
+  const quickB = button(r, "Create", () => onQuick());
 
-  let s = header(body, "Batch", true);
+  s = header(body, "Batch", true);
   slider(row(s), "accounts to create", "count", 1, MAX_ACCOUNTS);
   slider(row(s), "start index", "start", 0, 999);
   combo(row(s), "username pattern", ["{prefix}_{random}", "{prefix}_{n}"], "pattern");
@@ -240,6 +246,7 @@ input.fld:focus{background:var(--frameH)}
 
   s = header(body, "Pacing", true);
   slider(row(s), "delay between (ms)", "delay", 0, 5000);
+  slider(row(s), "delay after creation (ms)", "postDelay", 0, 10000);
   slider(row(s), "retries on error", "retry", 0, 10);
 
   body.appendChild(el("hr"));
@@ -276,7 +283,7 @@ input.fld:focus{background:var(--frameH)}
   const dock = el("div", "dock"), chips = new Map();
   ui.appendChild(dock);
   [[W1, "Nebula"], [W2, "Log"]].forEach(([w, n]) => {
-    const c = el("span", "btn", n);
+    const c = el("span", "btn", (w === W1 ? LOGO : "") + n);
     c.style.display = "none";
     c.onclick = () => showWin(w);
     dock.appendChild(c); chips.set(w, c);
@@ -370,6 +377,10 @@ input.fld:focus{background:var(--frameH)}
   }
 
   const guard = () => { if (ctl.stop) throw new Error("Runner stopped."); };
+  async function pause(ms) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { guard(); await sleep(Math.min(150, ms - (Date.now() - t0))); }
+  }
 
   async function waitForElement(selector, timeout = ELEMENT_TIMEOUT) {
     const t0 = Date.now();
@@ -407,7 +418,7 @@ input.fld:focus{background:var(--frameH)}
     }
   }
 
-  async function createOneTestAccount(index, sharedPassword) {
+  async function createOneTestAccount(index, sharedPassword, keepLoggedIn) {
     await logOutIfNeeded();
 
     // 1. Open the Sign Up tab.
@@ -434,6 +445,8 @@ input.fld:focus{background:var(--frameH)}
     // 5. Wait for the authenticated application, then let it settle.
     await waitForElement(SEL.logout);
     await sleep(150);
+    if (keepLoggedIn) return { username, password };
+    await pause(st.postDelay);
 
     // 6. Log out and wait for it to finish before counting success.
     const out = document.querySelector(SEL.logout);
@@ -443,10 +456,10 @@ input.fld:focus{background:var(--frameH)}
     return username;
   }
 
-  async function withRetry(index, sharedPassword) {
+  async function withRetry(index, sharedPassword, keepLoggedIn) {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await createOneTestAccount(index, sharedPassword);
+        return await createOneTestAccount(index, sharedPassword, keepLoggedIn);
       } catch (err) {
         if (ctl.stop || attempt >= st.retry) throw err;
         log(`Attempt ${attempt + 1} failed: ${err.message} Retrying...`, true);
@@ -486,8 +499,32 @@ input.fld:focus{background:var(--frameH)}
     }
   }
 
+  async function onQuick() {
+    if (ctl.running || quickBusy) return;
+    quickBusy = true; ctl.stop = false;
+    quickB.textContent = "Working...";
+    showWin(W2);
+    setStatus("creating one account");
+    log("Logging out (if needed) and creating one account...");
+    try {
+      const { username, password } = await withRetry(
+        st.start, st.pwMode === "Same for all" ? makePassword() : null, true);
+      log(`Created ${username} and stayed logged in.`);
+      log(`Password: ${password}`, true);
+      setStatus("idle");
+    } catch (err) {
+      if (ctl.stop) log("Stopped.", true);
+      else { console.error(err); log("Error: " + err.message); }
+      setStatus("idle");
+    } finally {
+      quickBusy = false; ctl.stop = false;
+      quickB.textContent = "Create";
+    }
+  }
+
   function onStart() {
     if (!ctl.running) {
+      if (quickBusy) return;
       ctl.running = true; ctl.paused = false; ctl.stop = false;
       startB.textContent = "Pause";
       runLoop();
@@ -503,7 +540,7 @@ input.fld:focus{background:var(--frameH)}
   }
 
   function onStop() {
-    if (!ctl.running) return;
+    if (!ctl.running && !quickBusy) return;
     ctl.stop = true;
     ctl.paused = false;
     setStatus("stopping...");
